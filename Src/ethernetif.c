@@ -39,6 +39,8 @@
 /* Private define ------------------------------------------------------------*/
 /* The time to block waiting for input. */
 #define TIME_WAITING_FOR_INPUT ( portMAX_DELAY )
+/* Time to block waiting for transmissions to finish */
+#define ETHIF_TX_TIMEOUT (2000U)
 /* USER CODE BEGIN OS_THREAD_STACK_SIZE_WITH_RTOS */
 /* Stack size of the interface thread */
 #define INTERFACE_THREAD_STACK_SIZE ( 350 )
@@ -58,9 +60,9 @@
 /* Private variables ---------------------------------------------------------*/
 /*
 @Note: This interface is implemented to operate in zero-copy mode only:
-        - Rx buffers will be allocated from LwIP stack memory heap,
+        - Rx Buffers will be allocated from LwIP stack Rx memory pool,
           then passed to ETH HAL driver.
-        - Tx buffers will be allocated from LwIP stack memory heap,
+        - Tx Buffers will be allocated from LwIP stack memory heap,
           then passed to ETH HAL driver.
 
 @Notes:
@@ -130,6 +132,7 @@ ETH_TxPacketConfig TxConfig;
 
 /* Private function prototypes -----------------------------------------------*/
 static void ethernetif_input(void const * argument);
+static void RMII_Thread( void const * argument );
 int32_t ETH_PHY_IO_Init(void);
 int32_t ETH_PHY_IO_DeInit (void);
 int32_t ETH_PHY_IO_ReadReg(uint32_t DevAddr, uint32_t RegAddr, uint32_t *pRegVal);
@@ -258,10 +261,16 @@ static void low_level_init(struct netif *netif)
   #endif /* LWIP_ARP */
 
   /* create a binary semaphore used for informing ethernetif of frame reception */
-  RxPktSemaphore = xSemaphoreCreateBinary();
+  osSemaphoreDef(RxSem);
+  RxPktSemaphore = osSemaphoreCreate(osSemaphore(RxSem), 1);
 
   /* create a binary semaphore used for informing ethernetif of frame transmission */
-  TxPktSemaphore = xSemaphoreCreateBinary();
+  osSemaphoreDef(TxSem);
+  TxPktSemaphore = osSemaphoreCreate(osSemaphore(TxSem), 1);
+
+  /* Decrease the semaphore's initial count from 1 to 0 */
+  osSemaphoreWait(RxPktSemaphore, 0);
+  osSemaphoreWait(TxPktSemaphore, 0);
 
   /* create the task that handles the ETH_MAC */
 /* USER CODE BEGIN OS_THREAD_DEF_CREATE_CMSIS_RTOS_V1 */
@@ -276,7 +285,12 @@ static void low_level_init(struct netif *netif)
   LAN8742_RegisterBusIO(&LAN8742, &LAN8742_IOCtx);
 
   /* Initialize the LAN8742 ETH PHY */
-  LAN8742_Init(&LAN8742);
+  if(LAN8742_Init(&LAN8742) != LAN8742_STATUS_OK)
+  {
+    netif_set_link_down(netif);
+    netif_set_down(netif);
+    return;
+  }
 
   if (hal_eth_init_status == HAL_OK)
   {
@@ -339,6 +353,15 @@ static void low_level_init(struct netif *netif)
 /* USER CODE BEGIN LOW_LEVEL_INIT */
     
 /* USER CODE END LOW_LEVEL_INIT */
+
+  if(HAL_GetREVID() == 0x1000)
+  {
+    /*
+      This thread will keep resetting the RMII interface until good frames are received
+    */
+    osThreadDef(RMII_Watchdog, RMII_Thread, osPriorityRealtime, 0, configMINIMAL_STACK_SIZE);
+    osThreadCreate (osThread(RMII_Watchdog), NULL);
+  }
 }
 
 /**
@@ -393,13 +416,30 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 
   pbuf_ref(p);
 
-  HAL_ETH_Transmit_IT(&heth, &TxConfig);
-  while(osSemaphoreWait(TxPktSemaphore, TIME_WAITING_FOR_INPUT)!=osOK)
-
+  do
   {
-  }
+    if(HAL_ETH_Transmit_IT(&heth, &TxConfig) == HAL_OK)
+    {
+      errval = ERR_OK;
+    }
+    else
+    {
 
-  HAL_ETH_ReleaseTxPacket(&heth);
+      if(HAL_ETH_GetError(&heth) & HAL_ETH_ERROR_BUSY)
+      {
+        /* Wait for descriptors to become available */
+        osSemaphoreWait(  TxPktSemaphore, ETHIF_TX_TIMEOUT);
+        HAL_ETH_ReleaseTxPacket(&heth);
+        errval = ERR_BUF;
+      }
+      else
+      {
+        /* Other error */
+        pbuf_free(p);
+        errval =  ERR_IF;
+      }
+    }
+  }while(errval == ERR_BUF);
 
   return errval;
 }
@@ -923,3 +963,30 @@ __weak void ethernetif_notify_conn_changed(struct netif *netif)
 }
 /* USER CODE END 8 */
 
+void RMII_Thread( void const * argument )
+{
+  (void) argument;
+
+  for(;;)
+  {
+    /* some unicast good packets are received */
+    if(heth.Instance->MMCRGUFCR > 0U)
+    {
+      /* RMII Init is OK: Delete the Thread */
+      osThreadTerminate(NULL);
+    }
+    else if(heth.Instance->MMCRFCECR > 10U)
+    {
+      /* ETH received too many packets with CRC errors, resetting RMII */
+      SYSCFG->PMC &= ~SYSCFG_PMC_MII_RMII_SEL;
+      SYSCFG->PMC |= SYSCFG_PMC_MII_RMII_SEL;
+
+      heth.Instance->MMCCR |= ETH_MMCCR_CR;
+    }
+    else
+    {
+      /* Delay 200 ms */
+      osDelay(200);
+    }
+  }
+}
