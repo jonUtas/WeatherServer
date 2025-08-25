@@ -1,0 +1,54 @@
+reads and sets LEDs as per video. 
+http://ausleuchtung.ch/stm32-nucleo-f767zi-web-server/
+
+https://www.youtube.com/watch?time_continue=486&v=imVEMjjni-M&feature=emb_logo
+
+
+using test.shtml, checkbox.html can be ignored as it only passes data to the server. 
+
+use perl pages in C:\Code\STM32CubeIDE\MakeFSData\makefsdata\
+
+outputs fsdata_custom.c need to change to fsdata.c and put in C:\Code\STM32CubeIDE\WeatherServer\Middlewares\Third_Party\LwIP\src\apps\httpd\
+
+also set file fsdata.c to non compile or rename it eg. fsdata.dog and change #include in fs.c  to #include "fsdata.dog"
+
+
+
+rtos included so differnt to video also nucleo board is nucleo-f746zg
+
+using serial with DMA as per Setting up a ringbuffer for STM32 in CubeIDE https://www.youtube.com/watch?v=6a_VNVWbYvU
+read/write of serial done seems ok
+
+
+
+Added weather.shtml it is case sensitive 
+
+program needs gratuitous arp, cant seem to configure it.  though it does recover in 10 minutes pretty close to exactly.
+after 10 mins it call into etharp_output() and recovers call stack is about 10 deep but screen shot failed. Close but no banana. 
+
+according to eth setup in config tool. RAM must be pointing at 2400,0000 which is 64K above 2000,0000. from datasheet stm32f74xx we can see first 64k ram is DTCM, 
+next bit 240K is SRAM1. 
+so need to change ld scripts to suit. 
+
+should check pins in ETH to see if they match stm32f74xx document. 
+see MB1137 nucleo-xxxxZx schematic.pdf or similar
+checked ok
+setup clocks HSI to get max 216MHZ 
+
+mpu privileded access only mpu disabled in hard fault
+see youtube controllers tech STM32 Ethernet #1Hardward Configuration part 1.
+    /* lwip descriptors and buffer loaded into non cached ram */
+  .lwip_sec (NOLOAD) :
+  {
+    . = ABSOLUTE(0x24000000);
+    *(.RxDecripSection)
+    
+    . = ABSOLUTE(0x24000080);
+    *(.TxDecripSection)
+    
+    . = ABSOLUTE(0x24000100);
+    *(.Zero-copy RX PBUF pool)
+	
+
+
+  } >RAM_D2   /*  was	RxArraySection */ 
