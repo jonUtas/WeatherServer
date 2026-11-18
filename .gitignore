@@ -2,10 +2,10 @@
 
 
 temp/ 
-/WebServer/Debug/
+/WeatherServer/Debug/
 
-/WebServer/.settings/
+/WeatherServer/.settings/
 /.metadata/
 /Sim/*.raw
-/WeatherServer/.settings/
+
 
