@@ -4,8 +4,12 @@
 temp/ 
 /WeatherServer/Debug/
 
+
 /WeatherServer/.settings/
 /.metadata/
 /Sim/*.raw
 
+
+.settings
+Debug/
 
